@@ -1,0 +1,5 @@
+# Built by the game from the pack's data; never committed.
+chunks/
+.DS_Store
+*.zip
+*.zip.sha256

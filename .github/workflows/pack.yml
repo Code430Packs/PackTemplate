@@ -1,0 +1,98 @@
+name: Pack
+
+# Validates every pack under packs/ with the game's own pack tools, at the game commit pinned
+# in code430.json, and checks each pack's version against its last release. A tag
+# `<pack folder>-v<version>` (e.g. `centretown-v0.2.0`) publishes that pack as a release:
+# a zip of the folder (without chunks/, which the game builds) and its sha256.
+
+on:
+  push:
+    branches: [main]
+    tags: ["*-v*"]
+  pull_request:
+
+permissions:
+  contents: write # releases on tags
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pack
+          fetch-depth: 0 # tags, for the version check
+
+      - name: Any packs?
+        id: packs
+        run: |
+          if find pack/packs -name pack.json | grep -q .; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No packs yet: add one under packs/ (see README.md)."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read the pinned game commit
+        if: steps.packs.outputs.found == 'true'
+        id: game
+        run: |
+          echo "repo=$(jq -r .game_repo pack/code430.json)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(jq -r .game_commit pack/code430.json)" >> "$GITHUB_OUTPUT"
+
+      # While the game repository is private, a read-only deploy key (secret GAME_DEPLOY_KEY)
+      # checks it out. Pull requests from forks don't get secrets, so they can't run this
+      # until the game is public; then the key goes and this step needs no secret.
+      - uses: actions/checkout@v4
+        if: steps.packs.outputs.found == 'true'
+        with:
+          repository: ${{ steps.game.outputs.repo }}
+          ref: ${{ steps.game.outputs.commit }}
+          path: game
+          ssh-key: ${{ secrets.GAME_DEPLOY_KEY }}
+
+      - uses: astral-sh/setup-uv@v6
+        if: steps.packs.outputs.found == 'true'
+
+      - name: Validate
+        if: steps.packs.outputs.found == 'true'
+        working-directory: game/tools
+        run: |
+          uv run python -m pack_tools "$GITHUB_WORKSPACE/pack/packs"
+
+      - name: Check versions
+        if: steps.packs.outputs.found == 'true'
+        working-directory: game/tools
+        run: |
+          status=0
+          for manifest in "$GITHUB_WORKSPACE"/pack/packs/*/pack.json; do
+            [ -f "$manifest" ] || continue
+            dir="$(dirname "$manifest")"
+            name="$(basename "$dir")"
+            args=("$dir")
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              tag="${GITHUB_REF#refs/tags/}"
+              [[ "$tag" == "$name"-v* ]] || continue
+              args+=(--tag "$tag")
+              last="$(git -C "$GITHUB_WORKSPACE/pack" tag --list "$name-v*" --sort=-v:refname | grep -vx "$tag" | head -1)"
+            else
+              last="$(git -C "$GITHUB_WORKSPACE/pack" tag --list "$name-v*" --sort=-v:refname | head -1)"
+            fi
+            [ -n "$last" ] && args+=(--ref "$last")
+            uv run python -m pack_tools version check "${args[@]}" || status=1
+          done
+          exit $status
+
+      - name: Release
+        if: steps.packs.outputs.found == 'true' && startsWith(github.ref, 'refs/tags/')
+        working-directory: pack
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          name="${tag%-v*}"
+          [ -d "packs/$name" ] || { echo "no packs/$name for tag $tag"; exit 1; }
+          (cd packs && zip -qr -X "../$tag.zip" "$name" -x "$name/chunks/*")
+          sha256sum "$tag.zip" > "$tag.zip.sha256"
+          gh release create "$tag" "$tag.zip" "$tag.zip.sha256" --title "$tag" --notes "Pack \`$name\` at version ${tag##*-v}. Built with the game at $(jq -r .game_commit code430.json)."
