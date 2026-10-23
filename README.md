@@ -75,5 +75,5 @@ uv run python -m pack_tools <this repo>/packs
 uv run python -m pack_tools version check <this repo>/packs/<folder> --ref <folder>-v<last>
 ```
 
-While the game repository is private, CI reads it with a read-only deploy key (the repository
-secret `GAME_DEPLOY_KEY`), so pull requests from forks can't run the checks yet.
+CI checks out the public game repository at the pinned commit, so pull requests from forks run
+the same checks.
