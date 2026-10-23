@@ -41,16 +41,14 @@ jobs:
           echo "repo=$(jq -r .game_repo pack/code430.json)" >> "$GITHUB_OUTPUT"
           echo "commit=$(jq -r .game_commit pack/code430.json)" >> "$GITHUB_OUTPUT"
 
-      # While the game repository is private, a read-only deploy key (secret GAME_DEPLOY_KEY)
-      # checks it out. Pull requests from forks don't get secrets, so they can't run this
-      # until the game is public; then the key goes and this step needs no secret.
+      # The game repository is public: no key needed, so fork pull requests run this too.
       - uses: actions/checkout@v4
         if: steps.packs.outputs.found == 'true'
         with:
           repository: ${{ steps.game.outputs.repo }}
           ref: ${{ steps.game.outputs.commit }}
           path: game
-          ssh-key: ${{ secrets.GAME_DEPLOY_KEY }}
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@v6
         if: steps.packs.outputs.found == 'true'
